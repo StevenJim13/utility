@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,9 +139,68 @@ func TestToAbsPath(t *testing.T) {
 			"~/hello.go",
 			filepath.Join(homeDirectory, "hello.go"),
 		},
+		{
+			"abs-path",
+			"/",
+			"/",
+		},
 	}
 
 	for _, c := range cases {
-		require.True(t, c.Expect == ToAbsPath(c.Path))
+		t.Run(c.Name, func(t *testing.T) {
+			require.True(t, c.Expect == ToAbsPath(c.Path))
+		})
+	}
+}
+
+func TestMakeFile(t *testing.T) {
+	tempFolder := t.TempDir()
+	defer os.RemoveAll(tempFolder)
+	cases := []struct {
+		Name   string
+		Path   string
+		Expect func(t *testing.T)
+	}{
+		{
+			"not-exist-file",
+			filepath.Join(tempFolder, "folder1", "not-exist-file"),
+			func(t *testing.T) {
+
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			fd, err := MakeFile(c.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o777)
+			require.NoError(t, err)
+			fmt.Println(fd.Stat())
+		})
+	}
+}
+
+func TestSameFile(t *testing.T) {
+	cases := []struct {
+		Name   string
+		Path1  string
+		Path2  string
+		Expect bool
+	}{
+		{
+			"same-file",
+			"/Users/kali/develop/utility/paths/path_test.go",
+			"/Users/kali/develop/utility/paths/path_test.go",
+			true,
+		},
+		{
+			"not-same-file",
+			"/users/home/test.txt",
+			"/users/home/test2.txt",
+			false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			require.Equal(t, c.Expect, SameFile(c.Path1, c.Path2))
+		})
 	}
 }

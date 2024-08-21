@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -8,36 +9,30 @@ import (
 	"time"
 )
 
-type Number interface {
-	int | int8 | int16 | int32 | int64 | uint | uint8 | uint16 | uint32 | uint64 | float32 | float64
-}
-
 // Max returns the max value in values
-func Max[T Number](values ...T) T {
-	if len(values) == 0 {
-		return 0
-	}
-	max := values[0]
-	for _, v := range values[1:] {
-		if v > max {
-			max = v
+func Max[T cmp.Ordered](values ...T) (ret T) {
+	if len(values) != 0 {
+		ret = values[0]
+		for _, v := range values[1:] {
+			if v > ret {
+				ret = v
+			}
 		}
 	}
-	return max
+	return
 }
 
 // Min returns the min value in values
-func Min[T Number](values ...T) T {
-	if len(values) == 0 {
-		return 0
-	}
-	min := values[0]
-	for _, v := range values[1:] {
-		if v < min {
-			min = v
+func Min[T cmp.Ordered](values ...T) (ret T) {
+	if len(values) != 0 {
+		ret = values[0]
+		for _, v := range values[1:] {
+			if v < ret {
+				ret = v
+			}
 		}
 	}
-	return min
+	return
 }
 
 const (

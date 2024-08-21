@@ -1,3 +1,7 @@
+## 2024(v1.2.8)
+- refactor: add paths.ToAbsPath test case
+- chore: update `Max` and `Min` arguments type Number to `cmd.Ordered`
+
 ## 20240808(v1.2.7)
 
 - refactor: update errors.CheckErr argument type to any
