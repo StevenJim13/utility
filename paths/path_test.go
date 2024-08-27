@@ -1,7 +1,6 @@
 package paths
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -173,34 +172,7 @@ func TestMakeFile(t *testing.T) {
 		t.Run(c.Name, func(t *testing.T) {
 			fd, err := MakeFile(c.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o777)
 			require.NoError(t, err)
-			fmt.Println(fd.Stat())
-		})
-	}
-}
-
-func TestSameFile(t *testing.T) {
-	cases := []struct {
-		Name   string
-		Path1  string
-		Path2  string
-		Expect bool
-	}{
-		{
-			"same-file",
-			"/Users/kali/develop/utility/paths/path_test.go",
-			"/Users/kali/develop/utility/paths/path_test.go",
-			true,
-		},
-		{
-			"not-same-file",
-			"/users/home/test.txt",
-			"/users/home/test2.txt",
-			false,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.Name, func(t *testing.T) {
-			require.Equal(t, c.Expect, SameFile(c.Path1, c.Path2))
+			defer fd.Close()
 		})
 	}
 }

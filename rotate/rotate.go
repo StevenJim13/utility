@@ -2,7 +2,6 @@ package rotate
 
 import (
 	"fmt"
-	"github.com/stkali/utility/log"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,32 +28,40 @@ const (
 	defaultMaxAge                 = 30 * 24 * time.Hour
 	defaultMaxSize          int64 = 1 << 28
 	defaultDuration               = 24 * time.Hour
-	defaultBackupTimeFormat       = time.DateTime
+	defaultBackupTimeFormat       = "2006-01-02:15-04-05.0000"
 	saultWidth                    = 6
 )
 
 var (
 	// NotRotateError is an error that is returned when no specify MaxSize and Duration.
-	NotRotateError      = errors.Error("no specify MaxSize or Duration")
-	NotSpecifyFileError = errors.Error("not specify rotating file")
-	ModePermissionError = errors.Error("invalid mode permission")
-	InvalidBackupsError = errors.Error("invalid backups")
-	InvalidMaxAgeError  = errors.Error("invalid max age")
+	NotRotateError       = errors.Error("no specify MaxSize or Duration")
+	NotSpecifyFileError  = errors.Error("not specify rotating file")
+	ModePermissionError  = errors.Error("invalid mode permission")
+	InvalidBackupsError  = errors.Error("invalid backups")
+	InvalidMaxAgeError   = errors.Error("invalid max age")
+	InvalidDurationError = errors.Error("invalid duration")
+	InvalidMaxSizeError  = errors.Error("invalid max size")
 )
 
 type Option struct {
 
 	// Duration specifies the time interval after which a new file should be created.
+	// <= 0 means no rotation based on time interval.
+	// `SetDuration` will modify the rotation mode.
 	Duration time.Duration
 
 	// MaxSize defines the threshold size (in bytes) that triggers a file rotation.
 	// A new log file is created the used space in the current log file exceeds MaxSize.
 	// If this value is 0, the rotating file size is not limited and a new file is
 	// created only when the duration interval is reached.
+	// <= 0 means no rotation based on file size.
+	// `SetMaxSize` will modify the rotation mode.
 	MaxSize int64
 
 	// Backups defines the maximum number of backup files that can be retained after rotation.
 	// When this limit is reached, the oldest backup file will be deleted to make room for new ones.
+	// = 0 means no backup files are retained.
+	// < 0 the backup deletion strategy based on `Backups` will not work.
 	Backups int
 
 	// CleanupBlock specifies whether backup file cleanup should be performed synchronously
@@ -64,10 +71,14 @@ type Option struct {
 
 	// MaxAge defines the maximum age that a backup file can have before it is considered for cleanup.
 	// Files older than this duration will be deleted during the cleanup process.
+	// <=0 the backup deletion strategy based on `MaxAge` will not work.
+	// `SetMaxAge` will modify the cleanup mode.
 	MaxAge time.Duration
 
 	// ModePerm specifies the default file permission bits used when creating new log files.
 	// This ensures that the log files are created with the desired security settings.
+	// default is 0o644.
+	// `SetModePerm` will modify the file permission bits.
 	ModePerm os.FileMode
 	// TODO: 增加日志文件压缩功能
 	// Compress bool
@@ -127,6 +138,20 @@ func multiRotate(f *File) error {
 		return f.roll(now)
 	default:
 		return sizeRotate(f)
+	}
+}
+
+func matchRotate(mode int) (func(f *File) error, error) {
+
+	switch mode {
+	case SizeRotate:
+		return sizeRotate, nil
+	case DurationRotate:
+		return durationRotate, nil
+	case DurationRotate | SizeRotate:
+		return multiRotate, nil
+	default:
+		return nil, NotRotateError
 	}
 }
 
@@ -192,7 +217,7 @@ func NewFile(file string, option *Option) (*File, error) {
 	if file == "" {
 		return nil, NotSpecifyFileError
 	}
-	// 设置路径相关的属性
+
 	f := &File{}
 	f.fullPath = paths.ToAbsPath(file)
 	f.path, f.name, f.ext = paths.SplitWithExt(f.fullPath)
@@ -203,29 +228,106 @@ func NewFile(file string, option *Option) (*File, error) {
 	if option == nil {
 		option = getDefaultOption()
 	}
-	if err := option.validate(); err != nil {
+	err := option.validate()
+	if err != nil {
 		return nil, err
 	}
 	f.option = option
-
 	if option.Duration > 0 {
 		f.mode |= DurationRotate
 	}
 	if option.MaxSize > 0 {
 		f.mode |= SizeRotate
 	}
-
-	switch f.mode {
-	case SizeRotate:
-		f.tryRotate = sizeRotate
-	case DurationRotate:
-		f.tryRotate = durationRotate
-	case DurationRotate | SizeRotate:
-		f.tryRotate = multiRotate
-	default:
-		return nil, NotRotateError
+	f.tryRotate, err = matchRotate(f.mode)
+	if err != nil {
+		return nil, errors.Newf("failed to create File, err: %s", err)
 	}
 	return f, nil
+}
+
+// SetDuration set the time interval for rotating log files.
+func (f *File) SetDuration(duration time.Duration) error {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+	mode := f.mode
+	if duration <= 0 {
+		mode &= ^DurationRotate
+	} else {
+		mode |= DurationRotate
+	}
+	tryRotate, err := matchRotate(mode)
+	if err != nil {
+		return errors.Newf("failed to set duration, err: %s", err)
+	}
+	f.mode = mode
+	f.option.Duration = duration
+	f.tryRotate = tryRotate
+	if duration < time.Hour {
+		errors.Warningf("duration:%s is less than 1 hour, it may make too many backup files", duration)
+	}
+	return nil
+}
+
+// SetMaxSize set the maximum size of a log file before it is rotated.
+func (f *File) SetMaxSize(size int64) error {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()	
+	mode := f.mode
+	if size <= 0 {
+		mode &= ^SizeRotate
+	} else {
+		mode |= SizeRotate
+	}
+	rotate, err := matchRotate(mode)
+	if err != nil {
+		return errors.Newf("failed to set MaxSize, err: %s", err)
+	}
+	f.mode = mode
+	f.option.MaxSize = size
+	f.tryRotate = rotate
+	if f.option.MaxSize < 1 << 22 {
+		errors.Warningf("MaxAge:%s is less than 4M, it may make too many backup files", f.option.MaxAge)
+	}
+	return nil
+}
+
+// SetBackups set the maximum number of backup files that can be retained after rotation.
+func (f *File) SetBackups(number int) {
+	if number == 0 {
+		errors.Warningf("Backups is set to 0, no backup files will be retained")
+	}
+	f.option.Backups = number
+}
+
+// SetMaxAge set the maximum age that a backup file can have before it is considered for cleanup.
+func (f *File) SetMaxAge(age time.Duration) {
+	f.option.MaxAge = age
+}
+
+// SetBlock set the cleanup block option.
+// If block is true, the cleanup will be performed in the current goroutine, otherwise it will be performed
+// in a separate goroutine to avoid blocking the main writing goroutine.
+func (f *File) SetBlock(block bool) {
+	f.option.CleanupBlock = block
+}
+
+// SetModePerm set the default file permission bits used when creating new log files.
+func (f *File) SetModePerm(perm os.FileMode) error {
+	if perm&WriteMode == 0 {
+		return ModePermissionError
+	}
+	f.option.ModePerm = perm
+	return nil
+}
+
+// Used returns the amount of space already used in the current log file (in bytes).
+func (f *File) Used() int64 {
+	return f.used
+}
+
+func (f *File) String() string {
+	return f.filename
 }
 
 // Write writes the specified data to the rotating file.
@@ -402,7 +504,6 @@ func (f *File) cleanBackups() error {
 		index := slices.IndexFunc(backups, func(s string) bool {
 			return s[:width] >= limit
 		})
-		log.Debugf("backups: %s, limit: %s index: %d maxAge:%s", backups, limit, index, f.option.MaxAge)
 		// if the limit file is not found, all backups are older than the limit, so we can delete all backups
 		if index == -1 {
 			deleteIndex = length
@@ -412,7 +513,6 @@ func (f *File) cleanBackups() error {
 	}
 	// delete backups
 	if deleteIndex > 0 {
-		log.Debugf("delete file defIndex: %d", deleteIndex)
 		return f.deleteBackupFiles(backups[:deleteIndex])
 	}
 	return nil
@@ -475,47 +575,6 @@ func (f *File) close() error {
 	f.recorder = nil
 	f.used = 0
 	return nil
-}
-
-// SetBackups set the maximum number of backup files that can be retained after rotation.
-func (f *File) SetBackups(number int) error {
-	if number < 0 {
-		return InvalidBackupsError
-	}
-	f.option.Backups = number
-	return nil
-}
-
-func (f *File) SetBlock(block bool) error {
-	f.option.CleanupBlock = block
-	return nil
-}
-
-// SetMaxAge set the maximum age that a backup file can have before it is considered for cleanup.
-func (f *File) SetMaxAge(age time.Duration) error {
-	if age < 0 {
-		return errors.Newf("invalid live age: %d", age)
-	}
-	f.option.MaxAge = age
-	return nil
-}
-
-//// SetModePerm set the default file permission bits used when creating new log files.
-//func (f *File) SetModePerm(perm os.FileMode) error {
-//	if perm&WriteMode == 0 {
-//		return ModePermissionError
-//	}
-//	f.option.ModePerm = perm
-//	return nil
-//}
-
-// Used returns the amount of space already used in the current log file (in bytes).
-func (f *File) Used() int64 {
-	return f.used
-}
-
-func (f *File) String() string {
-	return f.filename
 }
 
 //func NewSizeRotateFile(file string, size int64) (*File, error) {
