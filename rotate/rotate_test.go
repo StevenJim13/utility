@@ -16,7 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-//go:generate mockgen -package rotate -destination mock_rotate_test.go io WriteCloser
+//go:generate mockgen -package rotate -destination mock_WriteCloseStator_test.go github.com/stkali/utility/rotate WriteCloseStator
 
 func TestNewFile(t *testing.T) {
 	testDir := t.TempDir()
@@ -147,7 +147,6 @@ func TestSetDuration(t *testing.T) {
 		fmt.Println(err)
 		require.ErrorIs(t, err, NotRotateError)
 	})
-
 }
 
 func TestSetMaxSize(t *testing.T) {
@@ -232,20 +231,113 @@ func TestModePerm(t *testing.T) {
 }
 
 func TestWriteStringAndWrite(t *testing.T) {
-	testDir := t.TempDir()
-	defer os.RemoveAll(testDir)
-	testFile := filepath.Join(testDir, lib.RandString(6)+".rot")
-	f, err := NewFile(testFile, &Option{MaxSize: 1 << 10, Duration: time.Hour * 24})
-	require.NoError(t, err)
-	defer f.Close()
-	n, err := f.WriteString("hello")
-	require.Equal(t, 5, n)
-	require.NoError(t, err)
-	n, err = f.Write(nil)
-	require.Equal(t, 0, n)
-	require.NoError(t, err)
-	n, err = f.Write([]byte("world"))
-	require.Equal(t, 5, n)
+	t.Run("successfully write string and write", func(t *testing.T) {
+		testDir := t.TempDir()
+		defer os.RemoveAll(testDir)
+		testFile := filepath.Join(testDir, lib.RandString(6)+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: 1 << 10, Duration: time.Hour * 24})
+		require.NoError(t, err)
+		defer f.Close()
+		n, err := f.WriteString("hello")
+		require.Equal(t, 5, n)
+		require.NoError(t, err)
+		n, err = f.Write(nil)
+		require.Equal(t, 0, n)
+		require.NoError(t, err)
+		n, err = f.Write([]byte("world"))
+		require.Equal(t, 5, n)
+		require.NoError(t, err)
+	})
+	t.Run("write string failed", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		w := NewMockWriteCloseStator(ctrl)
+		retErr := errors.Error("write string failed")
+		w.EXPECT().Write(gomock.Any()).Return(0, retErr)
+		f, err := NewFile("test", nil)
+		require.NoError(t, err)
+		err = f.SetDuration(-1)
+		require.NoError(t, err)
+		f.recorder = w
+		n, err := f.WriteString("hello")
+		require.Equal(t, 0, n)
+		require.ErrorIs(t, err, retErr)
+	})
+}
+
+func TestRoll(t *testing.T) {
+	t.Run("backup < 0", func(t *testing.T) {
+		testDir := t.TempDir()
+		defer os.RemoveAll(testDir)
+		testFile := filepath.Join(testDir, lib.RandString(6)+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: 10, Backups: -1, Duration: time.Hour * 24})
+		require.NoError(t, err)
+		defer f.Close()
+		number := rand.Intn(10) + 5
+		for i := 0; i < number; i++ {
+			n, err := f.WriteString(lib.RandString(12))
+			require.NoError(t, err)
+			require.Equal(t, 12, n)
+		}
+		files, err := f.BackupFiles()
+
+		require.Equal(t, number-1, len(files))
+		err = f.roll(time.Now())
+		require.NoError(t, err)
+		files, err = f.BackupFiles()
+		require.NoError(t, err)
+		require.Equal(t, number, len(files))
+	})
+	t.Run("backup == 0", func(t *testing.T) {
+		testDir := t.TempDir()
+		defer os.RemoveAll(testDir)
+		testFile := filepath.Join(testDir, lib.RandString(6)+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: 10, Backups: 30, Duration: time.Hour * 24})
+		f.SetBackups(0)
+		require.NoError(t, err)
+		defer f.Close()
+		number := rand.Intn(10) + 5
+		for i := 0; i < number; i++ {
+			n, err := f.WriteString(lib.RandString(12))
+			require.NoError(t, err)
+			require.Equal(t, 12, n)
+		}
+		files, err := f.BackupFiles()
+		require.Equal(t, 0, len(files))
+	})
+	t.Run("no file", func(t *testing.T) {
+		testDir := t.TempDir()
+		defer os.RemoveAll(testDir)
+		testFile := filepath.Join(testDir, lib.RandString(6)+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: 10, Backups: 30, Duration: time.Hour * 24})
+		require.NoError(t, err)
+		defer f.Close()
+		n, err := f.WriteString(lib.RandString(12))
+		require.NoError(t, err)
+		require.Equal(t, 12, n)
+
+		buf := &bytes.Buffer{}
+		errors.SetWarningOutput(buf)
+		err = os.RemoveAll(f.fullPath)
+		require.NoError(t, err)
+		err = f.roll(time.Now())
+		require.NoError(t, err)
+		require.Contains(t, buf.String(), "no such file or directory")
+	})
+
+	t.Run("roll failed", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		w := NewMockWriteCloseStator(ctrl)
+		retErr := errors.Error("roll failed")
+		w.EXPECT().Close().Return(retErr)
+		f, err := NewFile("test", nil)
+		require.NoError(t, err)
+		f.recorder = w
+		err = f.roll(time.Now())
+		require.ErrorIs(t, err, retErr)
+	})
+
 }
 
 func TestSizeRotate(t *testing.T) {
@@ -283,6 +375,33 @@ func TestSizeRotate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, len(files))
 
+}
+
+func TestCheck(t *testing.T) {
+
+	testDir := t.TempDir()
+	defer os.RemoveAll(testDir)
+	testFile := filepath.Join(testDir, lib.RandString(6)+".rot")
+	f, err := NewFile(testFile, &Option{MaxSize: 1 << 30})
+	require.NoError(t, err)
+	defer f.Close()
+
+	// set permission to 000
+	err = os.Chmod(f.path, 0o000)
+	require.NoError(t, err)
+	n, err := f.WriteString("hello world!\n")
+	require.ErrorIs(t, err, os.ErrPermission)
+	require.Equal(t, 0, n)
+	err = os.Chmod(f.path, 0o777)
+	require.NoError(t, err)
+	n, err = f.WriteString("hello world!\n")
+	require.NoError(t, err)
+
+	err = os.Remove(f.fullPath)
+	require.NoError(t, err)
+
+	n, err = f.WriteString(lib.RandString(12))
+	require.NoError(t, err)
 }
 
 func TestDurationRotate(t *testing.T) {
@@ -475,6 +594,30 @@ func TestCleanBackups(t *testing.T) {
 		require.ErrorIs(t, err, os.ErrNotExist)
 
 	})
+
+	t.Run("no backup files", func(t *testing.T) {
+		testDir := t.TempDir()
+		defer os.RemoveAll(testDir)
+		testFile := filepath.Join(testDir, lib.RandString(6)+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: 10, Backups: 10, MaxAge: time.Hour, CleanupBlock: true})
+		require.NoError(t, err)
+		defer f.Close()
+		number := rand.Intn(10) + 5
+		for i := 0; i < number; i++ {
+			n, err := f.WriteString("hello world!\n")
+			require.Equal(t, 13, n)
+			require.NoError(t, err)
+		}
+		files, err := f.BackupFiles()
+		require.NoError(t, err)
+		require.Equal(t, number-1, len(files))
+		f.SetBackups(0)
+		err = f.cleanBackups()
+		require.NoError(t, err)
+		files, err = f.BackupFiles()
+		require.NoError(t, err)
+		require.Equal(t, 0, len(files))
+	})
 }
 
 func TestFileNextBackupFile(t *testing.T) {
@@ -506,6 +649,17 @@ func TestFileNextBackupFile(t *testing.T) {
 	require.True(t, after.Sub(afterTime) <= time.Hour)
 }
 
+func TestDeleteBackupFile(t *testing.T) {
+	file, err := NewFile("test", nil)
+	require.NoError(t, err)
+	defer file.Close()
+	buf := &bytes.Buffer{}
+	errors.SetWarningOutput(buf)
+	err = file.deleteBackupFiles([]string{"test1", "test2", "test3"})
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "failed to remove backup file")
+}
+
 func TestClose(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
@@ -526,7 +680,7 @@ func TestClose(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
-		recorder := NewMockWriteCloser(ctrl)
+		recorder := NewMockWriteCloseStator(ctrl)
 		err := fmt.Errorf("close error")
 		recorder.EXPECT().Close().Return(err)
 		file := File{

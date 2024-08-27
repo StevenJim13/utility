@@ -272,7 +272,7 @@ func (f *File) SetDuration(duration time.Duration) error {
 // SetMaxSize set the maximum size of a log file before it is rotated.
 func (f *File) SetMaxSize(size int64) error {
 	f.mtx.Lock()
-	defer f.mtx.Unlock()	
+	defer f.mtx.Unlock()
 	mode := f.mode
 	if size <= 0 {
 		mode &= ^SizeRotate
@@ -286,7 +286,7 @@ func (f *File) SetMaxSize(size int64) error {
 	f.mode = mode
 	f.option.MaxSize = size
 	f.tryRotate = rotate
-	if f.option.MaxSize < 1 << 22 {
+	if f.option.MaxSize < 1<<22 {
 		errors.Warningf("MaxAge:%s is less than 4M, it may make too many backup files", f.option.MaxAge)
 	}
 	return nil
@@ -377,6 +377,17 @@ func (f *File) check() error {
 	return nil
 }
 
+type Stator interface {
+	Stat() (os.FileInfo, error)
+}
+
+// WriteCloseStator is a file descriptor that implements both io.Writer, Stator and io.Closer interfaces.
+// For mock testing.
+type WriteCloseStator interface {
+	io.WriteCloser
+	Stator
+}
+
 func (f *File) setFD(fd io.Writer) error {
 	f.recorder = fd
 	f.used = 0
@@ -388,7 +399,7 @@ func (f *File) setFD(fd io.Writer) error {
 	}
 	// check size
 	if f.mode&SizeRotate != 0 {
-		if fileDesc, ok := fd.(*os.File); ok {
+		if fileDesc, ok := fd.(Stator); ok {
 			stat, err := fileDesc.Stat()
 			if err != nil {
 				return errors.Newf("failed to get fd info, err: %s", err)
@@ -406,28 +417,20 @@ func (f *File) roll(now time.Time) error {
 	if err != nil {
 		return err
 	}
-	// 0 backup
-	if f.option.Backups == 0 {
-		fd, err := paths.MakeFile(f.fullPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.option.ModePerm)
+
+	if f.option.Backups != 0 {
+		// backup >= 1
+		backupFilename := f.NextBackupFile(now)
+		backupFile := filepath.Join(f.path, backupFilename)
+		if paths.IsExisted(backupFilename) {
+			return f.roll(time.Now())
+		}
+		err = os.Rename(f.fullPath, backupFile)
 		if err != nil {
-			return err
-		}
-		if err = f.setFD(fd); err != nil {
-			return err
-		}
-		return nil
-	}
-	// backup >= 1
-	backupFilename := f.NextBackupFile(now)
-	backupFile := filepath.Join(f.path, backupFilename)
-	if paths.IsExisted(backupFilename) {
-		return f.roll(time.Now())
-	}
-	err = os.Rename(f.fullPath, backupFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			errors.Warningf("failed to backup file: %q, err: %s", backupFile, err)
-			return nil
+			if os.IsNotExist(err) {
+				errors.Warningf("failed to backup file: %q, err: %s", backupFile, err)
+				return nil
+			}
 		}
 	}
 	fd, err := paths.MakeFile(f.fullPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.option.ModePerm)
@@ -437,7 +440,10 @@ func (f *File) roll(now time.Time) error {
 	if err = f.setFD(fd); err != nil {
 		return err
 	}
-	return f.CleanBackups()
+	if f.option.Backups > 0 {
+		return f.CleanBackups()
+	}
+	return nil
 }
 
 // NextBackupFile returns the name of the next backup file based on the current time.
