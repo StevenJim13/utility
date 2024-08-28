@@ -3,10 +3,13 @@ package rotate
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -690,5 +693,70 @@ func TestClose(t *testing.T) {
 		wrapperErr := file.Close()
 		require.Error(t, err)
 		require.ErrorIs(t, wrapperErr, err)
+	})
+}
+
+func BenchmarkWrite(b *testing.B) {
+	testDir := b.TempDir()
+	defer os.RemoveAll(testDir)
+
+	b.Run("size mode", func(b *testing.B) {
+		testFile := filepath.Join(testDir, "size_rotate"+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: 1 << 20, Duration: -1})
+		require.NoError(b, err)
+		defer f.Close()
+		for i := 0; i < b.N; i++ {
+			n, err := f.WriteString("hello world!\n")
+			require.Equal(b, 13, n)
+			require.NoError(b, err)
+		}
+	})
+
+	b.Run("duration mode", func(b *testing.B) {
+		testFile := filepath.Join(testDir, "duration_rotate"+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: -1, Duration: time.Hour * 24})
+		require.NoError(b, err)
+		defer f.Close()
+		for i := 0; i < b.N; i++ {
+			n, err := f.WriteString("hello world!\n")
+			require.Equal(b, 13, n)
+			require.NoError(b, err)
+		}
+	})
+
+	b.Run("multi mode", func(b *testing.B) {
+		testFile := filepath.Join(testDir, "duration_rotate"+".rot")
+		f, err := NewFile(testFile, &Option{MaxSize: 1 << 40, Duration: time.Hour * 24})
+		require.NoError(b, err)
+		defer f.Close()
+		for i := 0; i < b.N; i++ {
+			n, err := f.WriteString("hello world!\n")
+			require.Equal(b, 13, n)
+			require.NoError(b, err)
+		}
+	})
+
+	b.Run("file system mode", func(b *testing.B) {
+		testFile := filepath.Join(testDir, "duration_rotate"+".rot")
+		f, err := os.OpenFile(testFile, os.O_CREATE|os.O_WRONLY, 0644)
+		require.NoError(b, err)
+		defer f.Close()
+		for i := 0; i < b.N; i++ {
+			n, err := f.WriteString("hello world!\n")
+			require.Equal(b, 13, n)
+			require.NoError(b, err)
+		}
+	})
+
+	b.Run("old size mode", func(b *testing.B) {
+		testFile := filepath.Join(testDir, "duration_rotate"+".rot")
+		f, err := NewSizeRotateFile(testFile, 1<<40)
+		require.NoError(b, err)
+		defer f.Close()
+		for i := 0; i < b.N; i++ {
+			n, err := f.WriteString("hello world!\n")
+			require.Equal(b, 13, n)
+			require.NoError(b, err)
+		}
 	})
 }
