@@ -116,44 +116,30 @@ func getDefaultOption() *Option {
 	}
 }
 
-func durationRotate(f *File) error {
-	select {
-	case now := <-f.ticker.C:
-		return f.roll(now)
-	default:
-		return nil
-	}
-}
+// func durationRotate(f *File) error {
+// 	select {
+// 	case now := <-f.ticker.C:
+// 		return f.roll(now)
+// 	default:
+// 		return nil
+// 	}
+// }
 
-func sizeRotate(f *File) error {
-	if f.used < f.option.MaxSize {
-		return nil
-	}
-	return f.roll(time.Now())
-}
+// func sizeRotate(f *File) error {
+// 	if f.used < f.option.MaxSize {
+// 		return nil
+// 	}
+// 	return f.roll(time.Now())
+// }
 
-func multiRotate(f *File) error {
-	select {
-	case now := <-f.ticker.C:
-		return f.roll(now)
-	default:
-		return sizeRotate(f)
-	}
-}
-
-func matchRotate(mode int) (func(f *File) error, error) {
-
-	switch mode {
-	case SizeRotate:
-		return sizeRotate, nil
-	case DurationRotate:
-		return durationRotate, nil
-	case DurationRotate | SizeRotate:
-		return multiRotate, nil
-	default:
-		return nil, NotRotateError
-	}
-}
+// func multiRotate(f *File) error {
+// 	select {
+// 	case now := <-f.ticker.C:
+// 		return f.roll(now)
+// 	default:
+// 		return sizeRotate(f)
+// 	}
+// }
 
 // File represents a rotating file that can be used to write data to.
 // It implements the io.Writer interface.
@@ -167,7 +153,7 @@ type File struct {
 
 	// tryRotate is a function that is called to determine whether a new file should be created
 	// based on the current log file size or time interval.
-	tryRotate func(f *File) error
+	// tryRotate func(f *File) error
 
 	// ticker is a pointer to a time.Timer that is used to schedule the next file rotation
 	// based on the duration specified. When the timer expires, a new file is created
@@ -239,7 +225,7 @@ func NewFile(file string, option *Option) (*File, error) {
 	if option.MaxSize > 0 {
 		f.mode |= SizeRotate
 	}
-	f.tryRotate, err = matchRotate(f.mode)
+	// f.tryRotate, err = matchRotate(f.mode)
 	if err != nil {
 		return nil, errors.Newf("failed to create File, err: %s", err)
 	}
@@ -256,13 +242,13 @@ func (f *File) SetDuration(duration time.Duration) error {
 	} else {
 		mode |= DurationRotate
 	}
-	tryRotate, err := matchRotate(mode)
-	if err != nil {
-		return errors.Newf("failed to set duration, err: %s", err)
-	}
+	// tryRotate, err := matchRotate(mode)
+	// if err != nil {
+	// 	return errors.Newf("failed to set duration, err: %s", err)
+	// }
 	f.mode = mode
 	f.option.Duration = duration
-	f.tryRotate = tryRotate
+	// f.tryRotate = tryRotate
 	if duration < time.Hour {
 		errors.Warningf("duration:%s is less than 1 hour, it may make too many backup files", duration)
 	}
@@ -279,13 +265,13 @@ func (f *File) SetMaxSize(size int64) error {
 	} else {
 		mode |= SizeRotate
 	}
-	rotate, err := matchRotate(mode)
-	if err != nil {
-		return errors.Newf("failed to set MaxSize, err: %s", err)
-	}
+	// rotate, err := matchRotate(mode)
+	// if err != nil {
+	// 	return errors.Newf("failed to set MaxSize, err: %s", err)
+	// }
 	f.mode = mode
 	f.option.MaxSize = size
-	f.tryRotate = rotate
+	// f.tryRotate = rotate
 	if f.option.MaxSize < 1<<22 {
 		errors.Warningf("MaxAge:%s is less than 4M, it may make too many backup files", f.option.MaxAge)
 	}
@@ -332,15 +318,8 @@ func (f *File) String() string {
 
 // Write writes the specified data to the rotating file.
 func (f *File) Write(b []byte) (int, error) {
-	if b == nil {
-		return 0, nil
-	}
 	f.mtx.Lock()
 	defer f.mtx.Unlock()
-	// check status
-	if err := f.check(); err != nil {
-		return 0, err
-	}
 	// write
 	n, err := f.recorder.Write(b)
 	if err != nil {
@@ -348,6 +327,11 @@ func (f *File) Write(b []byte) (int, error) {
 	}
 	// update used
 	f.used += int64(n)
+	if f.used > f.option.MaxSize {
+		if err = f.rotate(); err != nil {
+			return n, err
+		}
+	}
 	return n, nil
 }
 
@@ -365,15 +349,18 @@ func (f *File) check() error {
 		if err != nil {
 			return err
 		}
-		err = f.setFD(fd)
-		if err != nil {
-			return err
-		}
-		return f.CleanBackups()
+		f.recorder = fd
+		f.used = 0
+		// check duration
+		// err = f.setFD(fd)
+		// if err != nil {
+		// 	return err
+		// }
+		// return f.CleanBackups()
 	}
-	if err := f.tryRotate(f); err != nil {
-		return err
-	}
+	// if f.mode&SizeRotate != 0 && f.option.MaxSize > 0 && f.used >= f.option.MaxSize {
+	// 	return f.roll(time.Now())
+	// }
 	return nil
 }
 
@@ -410,9 +397,10 @@ func (f *File) setFD(fd io.Writer) error {
 	return nil
 }
 
-// roll creates a new log file and closes the current file descriptor.
+// rotate creates a new log file and closes the current file descriptor.
 // It also performs backup file cleanup if necessary.
-func (f *File) roll(now time.Time) error {
+func (f *File) rotate() error {
+
 	err := f.close()
 	if err != nil {
 		return err
@@ -420,10 +408,10 @@ func (f *File) roll(now time.Time) error {
 
 	if f.option.Backups != 0 {
 		// backup >= 1
-		backupFilename := f.NextBackupFile(now)
+		backupFilename := f.NextBackupFile(time.Now())
 		backupFile := filepath.Join(f.path, backupFilename)
 		if paths.IsExisted(backupFilename) {
-			return f.roll(time.Now())
+			return f.rotate()
 		}
 		err = os.Rename(f.fullPath, backupFile)
 		if err != nil {
@@ -603,3 +591,35 @@ func (f *File) close() error {
 //	option.Duration = duration
 //	return NewFile(file, option)
 //}
+
+type Simple struct {
+	writer   io.Writer
+	maxSize  int64
+	used     int64
+	filename string
+}
+
+func (s *Simple) Write(b []byte) (int, error) {
+	n, err := s.writer.Write(b)
+	if err != nil {
+		return n, errors.Newf("failed to write %s to file: %s, err: %s", lib.ToString(b), s.filename, err)
+	}
+	s.used += int64(n)
+	if s.used > s.maxSize {
+		//
+	}
+	return n, nil
+}
+
+
+
+func (s *Simple) WriteString(t string) (int, error) {
+	return s.Write(lib.ToBytes(t))
+}
+
+func (s *Simple) Close() error {
+	if closer, ok := s.writer.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}

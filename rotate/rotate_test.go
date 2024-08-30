@@ -3,13 +3,11 @@ package rotate
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
+
 	"testing"
 	"time"
 
@@ -705,6 +703,9 @@ func BenchmarkWrite(b *testing.B) {
 		f, err := NewFile(testFile, &Option{MaxSize: 1 << 20, Duration: -1})
 		require.NoError(b, err)
 		defer f.Close()
+		n, err := f.WriteString("hello world!\n")
+		require.Equal(b, 13, n)
+		require.NoError(b, err)
 		for i := 0; i < b.N; i++ {
 			n, err := f.WriteString("hello world!\n")
 			require.Equal(b, 13, n)
@@ -725,7 +726,7 @@ func BenchmarkWrite(b *testing.B) {
 	})
 
 	b.Run("multi mode", func(b *testing.B) {
-		testFile := filepath.Join(testDir, "duration_rotate"+".rot")
+		testFile := filepath.Join(testDir, "multi_rotate"+".rot")
 		f, err := NewFile(testFile, &Option{MaxSize: 1 << 40, Duration: time.Hour * 24})
 		require.NoError(b, err)
 		defer f.Close()
@@ -737,7 +738,7 @@ func BenchmarkWrite(b *testing.B) {
 	})
 
 	b.Run("file system mode", func(b *testing.B) {
-		testFile := filepath.Join(testDir, "duration_rotate"+".rot")
+		testFile := filepath.Join(testDir, "fs_rotate"+".rot")
 		f, err := os.OpenFile(testFile, os.O_CREATE|os.O_WRONLY, 0644)
 		require.NoError(b, err)
 		defer f.Close()
@@ -749,7 +750,7 @@ func BenchmarkWrite(b *testing.B) {
 	})
 
 	b.Run("old size mode", func(b *testing.B) {
-		testFile := filepath.Join(testDir, "duration_rotate"+".rot")
+		testFile := filepath.Join(testDir, "old"+".rot")
 		f, err := NewSizeRotateFile(testFile, 1<<40)
 		require.NoError(b, err)
 		defer f.Close()
@@ -759,4 +760,44 @@ func BenchmarkWrite(b *testing.B) {
 			require.NoError(b, err)
 		}
 	})
+
+	b.Run("simple mode", func(b *testing.B) {
+		testFile := filepath.Join(testDir, "simple"+".rot")
+		fd, err := os.OpenFile(testFile, os.O_CREATE|os.O_WRONLY, 0644)
+		require.NoError(b, err)
+		simpe := &Simple{
+			writer: fd,
+			maxSize:   1 << 40,
+			filename:  testFile,
+		}
+		require.NoError(b, err)
+		defer simpe.Close()
+		for i := 0; i < b.N; i++ {
+			n, err := simpe.WriteString("hello world!\n")
+			require.Equal(b, 13, n)
+			require.NoError(b, err)
+		}
+	})
 }
+
+/*
+goos: linux
+goarch: amd64
+pkg: github.com/stkali/utility/rotate
+cpu: AMD EPYC 7763 64-Core Processor                
+BenchmarkWrite/size_mode-2         	  345199	      3569 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/duration_mode-2     	  354057	      3739 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/multi_mode-2        	  347209	      3736 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/file_system_mode-2  	  555214	      2153 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/old_size_mode-2     	  342559	      3576 ns/op	       0 B/op	       0 allocs/op
+
+goos: linux
+goarch: amd64
+pkg: github.com/stkali/utility/rotate
+cpu: AMD EPYC 7763 64-Core Processor                
+BenchmarkWrite/size_mode-2         	  338166	      3594 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/duration_mode-2     	  350220	      3512 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/multi_mode-2        	  350053	      3537 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/file_system_mode-2  	  555518	      2292 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrite/old_size_mode-2     	  346138	      3732 ns/op	       0 B/op	       0 allocs/op
+*/
